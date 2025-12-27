@@ -1,259 +1,611 @@
 
-import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { TrendingUp, TrendingDown, Package, Users, DollarSign, Activity, ArrowRight, Truck, RefreshCw, Coins, Banknote, CheckCircle } from 'lucide-react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { TrendingUp, Package, Users, DollarSign, Activity, ArrowRight, Truck, RefreshCw, Coins, Zap, FileText, Box, AlertTriangle, Loader2, Download, Banknote, Calendar as CalendarIcon, CheckSquare, Clock, BarChart3, Circle, CheckCircle2 } from 'lucide-react';
 import { supabaseService } from '../services/supabaseService';
-import { Skeleton } from '../components/Skeleton';
 import clsx from 'clsx';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend } from 'recharts';
+import { useStore } from '../store/useStore';
+import CalendarWidget from '../components/CalendarWidget';
+import { CalendarEvent, Task } from '../types';
+import toast from 'react-hot-toast';
+import { useDashboardStats, useTasks, useFinanceItems, useExpenses, useEmployees } from '../hooks/useQueries';
+import { usePWA } from '../hooks/usePWA';
 
 const Dashboard: React.FC = () => {
-  const [stats, setStats] = useState({
-    totalShipments: 0,
-    activeShipments: 0,
-    totalCustomers: 0,
-    financial: { estimatedProfitUSD: 0, byCurrency: {} as any },
-    recentActivity: [] as any[],
-    upcomingChecks: [] as any[]
-  });
-  const [loading, setLoading] = useState(true);
+  const { currencyRates, fetchLiveRates } = useStore();
+  const navigate = useNavigate();
+  const [updatingRates, setUpdatingRates] = useState(false);
+  const [chartCurrency, setChartCurrency] = useState<'USD' | 'EUR' | 'GBP' | 'TRY'>('USD');
+  const [forecastCurrency, setForecastCurrency] = useState<'USD' | 'EUR' | 'GBP' | 'TRY'>('USD');
+  
+  // New: Forecast Data State
+  const [forecastRawData, setForecastRawData] = useState<any[]>([]);
+  const [loadingForecast, setLoadingForecast] = useState(true);
 
-  // Mock Currency Data (Real implementation would use an API like Fixer.io)
-  const [rates] = useState([
-     { pair: 'USD/TRY', rate: 34.15, change: 0.25, trend: 'up' },
-     { pair: 'EUR/TRY', rate: 36.80, change: -0.12, trend: 'down' },
-     { pair: 'GBP/TRY', rate: 43.20, change: 0.05, trend: 'up' },
-  ]);
+  // PWA Hook
+  const { isInstallable, installApp } = usePWA();
+  
+  // Calendar State
+  const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
+  const [calendarMonth, setCalendarMonth] = useState({ year: new Date().getFullYear(), month: new Date().getMonth() });
 
+  // --- REACT QUERY HOOKS (Parallel Fetching & Caching) ---
+  const { data: statsData, isLoading: loadingStats } = useDashboardStats();
+  const { data: tasksData, isLoading: loadingTasks, refetch: refetchTasks } = useTasks();
+  const { data: financeData, isLoading: loadingFinance } = useFinanceItems();
+  const { data: expensesData, isLoading: loadingExpenses } = useExpenses();
+  const { data: employeesData, isLoading: loadingEmployees } = useEmployees();
+
+  const isLoading = loadingStats || loadingTasks || loadingFinance || loadingExpenses || loadingEmployees;
+
+  // --- Fetch Forecast Logic ---
   useEffect(() => {
-    const fetchData = async () => {
-      setLoading(true);
-      // Use real service
-      const result = await supabaseService.getDashboardStats();
-      if (result.data) {
-        setStats(result.data as any);
-      }
-      setLoading(false);
-    };
-    fetchData();
+      const loadForecast = async () => {
+          setLoadingForecast(true);
+          const res = await supabaseService.getCashFlowForecast();
+          if (res.data) setForecastRawData(res.data);
+          setLoadingForecast(false);
+      };
+      loadForecast();
   }, []);
 
-  const cards = [
-    { label: 'Toplam Dosya', value: stats.totalShipments, icon: Package, color: 'text-blue-600', bg: 'bg-blue-50', gradient: 'from-blue-50 to-white' },
-    { label: 'Aktif Yükler', value: stats.activeShipments, icon: Truck, color: 'text-orange-600', bg: 'bg-orange-50', gradient: 'from-orange-50 to-white' },
-    { label: 'Müşteriler', value: stats.totalCustomers, icon: Users, color: 'text-purple-600', bg: 'bg-purple-50', gradient: 'from-purple-50 to-white' },
-    { label: 'Tahmini Net Kar', value: `~$${stats.financial.estimatedProfitUSD.toLocaleString()}`, icon: TrendingUp, color: 'text-green-600', bg: 'bg-green-50', gradient: 'from-green-50 to-white' },
+  // --- Process Forecast Data for Chart based on Selected Currency ---
+  const forecastChartData = useMemo(() => {
+      return forecastRawData.map(week => ({
+          name: week.name,
+          income: week.breakdown?.[forecastCurrency]?.income || 0,
+          expense: week.breakdown?.[forecastCurrency]?.expense || 0,
+      }));
+  }, [forecastRawData, forecastCurrency]);
+
+  const forecastSummary = useMemo(() => {
+      return forecastChartData.reduce((acc, week) => ({
+          income: acc.income + week.income,
+          expense: acc.expense + week.expense
+      }), { income: 0, expense: 0 });
+  }, [forecastChartData]);
+
+  // --- Derived State ---
+  const stats = useMemo(() => {
+      return statsData || {
+        totalShipments: 0,
+        activeShipments: 0,
+        totalCustomers: 0,
+        financial: { estimatedProfitUSD: 0, byCurrency: {} },
+        recentActivity: [],
+        actionItems: { upcomingChecks: [], delayedShipments: [], overdueTasks: [] }
+      };
+  }, [statsData]);
+
+  // Specific Action Items from Stats
+  const actionItems = stats.actionItems || { upcomingChecks: [], delayedShipments: [], overdueTasks: [] };
+
+  const expiringPermits = useMemo(() => {
+      if (!employeesData) return [];
+      const today = new Date();
+      return employeesData
+        .filter(e => e.isActive && e.hasWorkPermit && e.workPermitEndDate)
+        .map(e => {
+            const endDate = new Date(e.workPermitEndDate!);
+            const diffTime = endDate.getTime() - today.getTime();
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+            return { name: e.fullName, daysLeft: diffDays, endDate };
+        })
+        .filter(item => item.daysLeft <= 30) // Show expiring or recently expired
+        .sort((a,b) => a.daysLeft - b.daysLeft);
+  }, [employeesData]);
+
+  // Combine Finance & Expenses for Chart
+  const combinedFinance = useMemo(() => {
+      let all = [];
+      if (financeData) all = [...financeData];
+      if (expensesData) {
+          const mapped = expensesData.map((e: any) => ({
+              ...e,
+              type: 'gider',
+              created_at: e.date, 
+              source: 'office'
+          }));
+          all = [...all, ...mapped];
+      }
+      return all;
+  }, [financeData, expensesData]);
+
+  // --- Calendar Fetching ---
+  useEffect(() => {
+      const fetchEvents = async () => {
+          const evts = await supabaseService.getEvents(calendarMonth.year, calendarMonth.month);
+          setCalendarEvents(evts);
+      };
+      fetchEvents();
+  }, [calendarMonth]);
+
+  const handleAddNote = async (date: string, title: string, desc: string) => {
+      await supabaseService.addNote({ date, title, description: desc });
+      toast.success('Not eklendi');
+      const evts = await supabaseService.getEvents(calendarMonth.year, calendarMonth.month);
+      setCalendarEvents(evts);
+  };
+
+  const handleUpdateRates = async () => {
+      setUpdatingRates(true);
+      try {
+          await fetchLiveRates();
+          toast.success("Kurlar güncellendi (Frankfurter API)");
+      } catch (e) {
+          toast.error("Kur güncellemesi başarısız.");
+      } finally {
+          setUpdatingRates(false);
+      }
+  };
+
+  const toggleTaskStatus = async (id: string, current: boolean) => {
+      await supabaseService.toggleTask(id, !current);
+      refetchTasks();
+      toast.success(current ? 'Görev geri alındı' : 'Görev tamamlandı');
+  };
+
+  // --- Dynamic Chart Data Calculation (Past 7 Days) ---
+  const chartData = useMemo(() => {
+    const days = 7;
+    const data = [];
+    const today = new Date();
+
+    for (let i = days - 1; i >= 0; i--) {
+        const d = new Date();
+        d.setDate(today.getDate() - i);
+        const dateStr = d.toISOString().split('T')[0];
+        const displayDay = d.toLocaleDateString('tr-TR', { weekday: 'short' });
+
+        const dayItems = combinedFinance.filter(item => 
+            (item.created_at || '').startsWith(dateStr) && 
+            item.currency === chartCurrency
+        );
+
+        const income = dayItems.filter(item => item.type === 'gelir').reduce((sum, item) => sum + Number(item.amount), 0);
+        const expense = dayItems.filter(item => item.type === 'gider').reduce((sum, item) => sum + Number(item.amount), 0);
+
+        data.push({
+            name: displayDay,
+            date: dateStr,
+            income: income,
+            expense: expense
+        });
+    }
+    return data;
+  }, [combinedFinance, chartCurrency]);
+
+  const kpiCards = [
+    { label: 'Toplam Sevkiyat', value: stats.totalShipments, icon: Package, color: 'text-blue-600', bg: 'bg-blue-50', border: 'border-blue-100' },
+    { label: 'Aktif Operasyon', value: stats.activeShipments, icon: Truck, color: 'text-orange-600', bg: 'bg-orange-50', border: 'border-orange-100' },
+    { label: 'Müşteri Sayısı', value: stats.totalCustomers, icon: Users, color: 'text-purple-600', bg: 'bg-purple-50', border: 'border-purple-100' },
   ];
 
   return (
     <div className="space-y-8 pb-10">
-      {/* Welcome Section */}
+      {/* Header */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 animate-fade-in">
         <div>
-          <h1 className="text-3xl font-extrabold text-brand-900 tracking-tight">Kontrol Paneli</h1>
-          <p className="text-slate-500 mt-1">Hoşgeldiniz, operasyonel süreçleriniz kontrol altında.</p>
+          <h1 className="text-3xl font-black text-brand-900 tracking-tight">Yönetim Paneli</h1>
+          <p className="text-slate-500 mt-1 font-medium">Kuzey Kıbrıs Lojistik Operasyon Merkezi</p>
         </div>
-        <div className="flex items-center gap-2 text-sm font-medium text-slate-500 bg-white/80 backdrop-blur px-4 py-2 rounded-full shadow-sm border border-slate-200">
-          <RefreshCw size={16} className={clsx(loading && "animate-spin")} />
-          <span>Canlı Veri</span>
+        
+        <div className="flex items-center gap-2">
+            {isInstallable && (
+                <button 
+                    onClick={installApp}
+                    className="flex items-center gap-2 bg-brand-900 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-lg hover:bg-brand-800 transition animate-pulse-slow"
+                >
+                    <Download size={16} /> Uygulamayı Yükle
+                </button>
+            )}
+
+            <div className="flex items-center gap-2 text-xs font-bold text-slate-500 bg-white px-3 py-2 rounded-lg border border-slate-200 shadow-sm h-[34px]">
+              <span className={clsx("w-2 h-2 rounded-full", isLoading ? "bg-orange-500 animate-bounce" : "bg-green-500 animate-pulse")}></span>
+              <span>{isLoading ? 'Güncelleniyor...' : 'Sistem Online'}</span>
+            </div>
         </div>
       </div>
 
-      {/* Stats Grid */}
+      {/* --- ACTION REQUIRED PANEL --- */}
+      <div className="animate-in fade-in slide-in-from-top-4 duration-500">
+          <div className="flex items-center gap-2 mb-4">
+              <div className="w-2 h-6 bg-red-500 rounded-full"></div>
+              <h2 className="text-lg font-black text-brand-900 uppercase tracking-wide">Acil Durumlar & Aksiyonlar</h2>
+          </div>
+          
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div onClick={() => navigate('/checks')} className="bg-white border-l-4 border-l-orange-500 rounded-r-xl p-4 shadow-sm border border-slate-200 hover:shadow-md transition cursor-pointer group">
+                  <div className="flex justify-between items-start">
+                      <div>
+                          <p className="text-xs font-bold text-slate-400 uppercase">Ödemesi Yaklaşan (7 Gün)</p>
+                          <p className={clsx("text-2xl font-black mt-1", actionItems.upcomingChecks.length > 0 ? "text-orange-600" : "text-slate-700")}>
+                              {actionItems.upcomingChecks.length} <span className="text-xs font-medium text-slate-400">Çek/Senet</span>
+                          </p>
+                      </div>
+                      <div className="bg-orange-50 p-2 rounded-lg text-orange-600 group-hover:scale-110 transition-transform">
+                          <Banknote size={20} />
+                      </div>
+                  </div>
+                  {actionItems.upcomingChecks.length > 0 ? (
+                      <p className="text-xs text-orange-600 mt-2 font-medium flex items-center gap-1">
+                          <Clock size={12}/> Vadesi gelen ödemeler var!
+                      </p>
+                  ) : (
+                      <p className="text-xs text-green-600 mt-2 font-medium flex items-center gap-1">
+                          <CheckSquare size={12}/> Bu hafta ödeme yok.
+                      </p>
+                  )}
+              </div>
+
+              <div onClick={() => navigate('/shipments')} className="bg-white border-l-4 border-l-red-500 rounded-r-xl p-4 shadow-sm border border-slate-200 hover:shadow-md transition cursor-pointer group">
+                  <div className="flex justify-between items-start">
+                      <div>
+                          <p className="text-xs font-bold text-slate-400 uppercase">Geciken Sevkiyatlar</p>
+                          <p className={clsx("text-2xl font-black mt-1", actionItems.delayedShipments.length > 0 ? "text-red-600" : "text-slate-700")}>
+                              {actionItems.delayedShipments.length} <span className="text-xs font-medium text-slate-400">Dosya</span>
+                          </p>
+                      </div>
+                      <div className="bg-red-50 p-2 rounded-lg text-red-600 group-hover:scale-110 transition-transform">
+                          <AlertTriangle size={20} />
+                      </div>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-2">ETA tarihi geçmiş aktif yükler.</p>
+              </div>
+
+              <div onClick={() => navigate('/staff')} className="bg-white border-l-4 border-l-purple-500 rounded-r-xl p-4 shadow-sm border border-slate-200 hover:shadow-md transition cursor-pointer group">
+                  <div className="flex justify-between items-start">
+                      <div>
+                          <p className="text-xs font-bold text-slate-400 uppercase">Personel İzinleri</p>
+                          <p className={clsx("text-2xl font-black mt-1", expiringPermits.length > 0 ? "text-purple-600" : "text-slate-700")}>
+                              {expiringPermits.length} <span className="text-xs font-medium text-slate-400">Kişi</span>
+                          </p>
+                      </div>
+                      <div className="bg-purple-50 p-2 rounded-lg text-purple-600 group-hover:scale-110 transition-transform">
+                          <Users size={20} />
+                      </div>
+                  </div>
+                  {expiringPermits.length > 0 ? (
+                      <p className="text-xs text-purple-600 mt-2 font-medium truncate">{expiringPermits[0].name} ve diğerleri...</p>
+                  ) : (
+                      <p className="text-xs text-green-600 mt-2 font-medium">Tüm evraklar güncel.</p>
+                  )}
+              </div>
+
+              <div onClick={() => navigate('/tasks')} className="bg-white border-l-4 border-l-blue-500 rounded-r-xl p-4 shadow-sm border border-slate-200 hover:shadow-md transition cursor-pointer group">
+                  <div className="flex justify-between items-start">
+                      <div>
+                          <p className="text-xs font-bold text-slate-400 uppercase">Gecikmiş Görevler</p>
+                          <p className={clsx("text-2xl font-black mt-1", actionItems.overdueTasks.length > 0 ? "text-blue-600" : "text-slate-700")}>
+                              {actionItems.overdueTasks.length} <span className="text-xs font-medium text-slate-400">Görev</span>
+                          </p>
+                      </div>
+                      <div className="bg-blue-50 p-2 rounded-lg text-blue-600 group-hover:scale-110 transition-transform">
+                          <CheckSquare size={20} />
+                      </div>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-2">Tamamlanmamış و süresi dolmuş.</p>
+              </div>
+          </div>
+      </div>
+
+      {/* QUICK ACTIONS ROW */}
+      <div className="bg-gradient-to-r from-brand-900 to-brand-800 rounded-2xl p-6 shadow-lg text-white">
+          <div className="flex items-center gap-2 mb-4 opacity-80">
+              <Zap size={18} className="text-accent-400" />
+              <span className="text-xs font-bold uppercase tracking-widest">Hızlı İşlemler</span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <button onClick={() => navigate('/shipments')} className="bg-white/10 hover:bg-white/20 p-3 rounded-xl flex items-center gap-3 transition group text-left">
+                  <div className="bg-white/20 p-2 rounded-lg text-accent-400 group-hover:scale-110 transition-transform"><Package size={20}/></div>
+                  <div><span className="block font-bold text-sm">Yeni Sevkiyat</span><span className="text-[10px] text-brand-200">Dosya Aç</span></div>
+              </button>
+              <button onClick={() => navigate('/customers')} className="bg-white/10 hover:bg-white/20 p-3 rounded-xl flex items-center gap-3 transition group text-left">
+                  <div className="bg-white/20 p-2 rounded-lg text-blue-300 group-hover:scale-110 transition-transform"><Users size={20}/></div>
+                  <div><span className="block font-bold text-sm">Müşteri Ekle</span><span className="text-[10px] text-brand-200">Cari Hesap</span></div>
+              </button>
+              <button onClick={() => navigate('/offers')} className="bg-white/10 hover:bg-white/20 p-3 rounded-xl flex items-center gap-3 transition group text-left">
+                  <div className="bg-white/20 p-2 rounded-lg text-green-300 group-hover:scale-110 transition-transform"><FileText size={20}/></div>
+                  <div><span className="block font-bold text-sm">Teklif Ver</span><span className="text-[10px] text-brand-200">Fiyat Çalışması</span></div>
+              </button>
+              <button onClick={() => navigate('/warehouse')} className="bg-white/10 hover:bg-white/20 p-3 rounded-xl flex items-center gap-3 transition group text-left">
+                  <div className="bg-white/20 p-2 rounded-lg text-orange-300 group-hover:scale-110 transition-transform"><Box size={20}/></div>
+                  <div><span className="block font-bold text-sm">Depo Girişi</span><span className="text-[10px] text-brand-200">Mal Kabul</span></div>
+              </button>
+          </div>
+      </div>
+
+      {/* KPI Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {loading
-          ? Array(4).fill(0).map((_, i) => (
-              <div key={i} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-                <div className="flex justify-between items-start">
-                  <div className="space-y-3 w-full">
-                    <Skeleton className="h-4 w-24" />
-                    <Skeleton className="h-8 w-16" />
-                  </div>
-                  <Skeleton className="h-12 w-12 rounded-xl" />
+        {loadingStats ? Array(4).fill(0).map((_, i) => (
+           <div key={i} className="h-32 bg-slate-100 rounded-2xl animate-pulse"></div>
+        )) : (
+            <>
+                {kpiCards.map((card, idx) => (
+                <div key={idx} className={clsx("p-6 rounded-2xl border shadow-sm hover:shadow-md transition-all duration-300 bg-white group relative overflow-hidden", card.border)}>
+                    <div className="relative z-10 flex justify-between items-start">
+                        <div>
+                            <p className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">{card.label}</p>
+                            <h3 className="text-3xl font-extrabold text-slate-800">{card.value}</h3>
+                        </div>
+                        <div className={clsx("p-3 rounded-xl", card.bg, card.color)}>
+                            <card.icon size={24} />
+                        </div>
+                    </div>
+                    <div className={clsx("absolute -bottom-6 -right-6 w-24 h-24 rounded-full opacity-10 group-hover:scale-125 transition-transform", card.bg)}></div>
                 </div>
-              </div>
-            ))
-          : cards.map((card, idx) => (
-              <div 
-                key={idx} 
-                className={clsx(
-                  "p-6 rounded-2xl border border-slate-100 shadow-sm card-hover relative overflow-hidden bg-gradient-to-br",
-                  card.gradient
-                )}
-                style={{ animation: `slideUp 0.5s ease-out ${idx * 100}ms backwards` }}
-              >
-                <div className="flex justify-between items-start relative z-10">
-                  <div>
-                    <p className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-2">{card.label}</p>
-                    <h3 className="text-3xl font-extrabold text-slate-800">{card.value}</h3>
-                  </div>
-                  <div className={clsx("p-3 rounded-xl shadow-sm bg-white", card.color)}>
-                    <card.icon size={24} />
-                  </div>
+                ))}
+                
+                <div className="p-5 rounded-2xl border border-emerald-100 shadow-sm hover:shadow-md transition-all duration-300 bg-white group relative overflow-hidden">
+                    <div className="relative z-10 h-full flex flex-col">
+                        <div className="flex justify-between items-center mb-3">
+                            <p className="text-emerald-600 text-xs font-bold uppercase tracking-wider flex items-center gap-1">
+                                <DollarSign size={14}/> KASA DURUMU (NET)
+                            </p>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 mt-auto">
+                            {['USD', 'EUR', 'GBP', 'TRY'].map((curr) => {
+                                const data = stats.financial.byCurrency[curr] || { income: 0, expense: 0 };
+                                const net = data.income - data.expense;
+                                return (
+                                    <div key={curr} className="bg-slate-50 p-2 rounded-lg border border-slate-100">
+                                        <div className="flex justify-between items-center mb-1">
+                                            <span className="text-[10px] font-bold text-slate-400">{curr}</span>
+                                            <div className={clsx("w-1.5 h-1.5 rounded-full", net >= 0 ? "bg-emerald-500" : "bg-red-500")}></div>
+                                        </div>
+                                        <p className={clsx("text-sm font-extrabold truncate", net >= 0 ? "text-slate-700" : "text-red-500")}>
+                                            {net.toLocaleString()}
+                                        </p>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                    <div className="absolute -bottom-6 -right-6 w-24 h-24 rounded-full opacity-10 group-hover:scale-125 transition-transform bg-emerald-50"></div>
                 </div>
-                {/* Decorative Background Icon */}
-                <card.icon className={clsx("absolute -bottom-4 -right-4 w-32 h-32 opacity-[0.07]", card.color)} />
-              </div>
-            ))}
+            </>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Main Content (Left 2 Cols) */}
+        
+        {/* Left Column: Charts & Activity */}
         <div className="lg:col-span-2 space-y-8">
-          
-          {/* Recent Activity Table */}
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden animate-slide-up" style={{ animationDelay: '300ms' }}>
-            <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/30">
-              <h3 className="font-bold text-brand-900 text-lg flex items-center gap-2">
-                <Activity size={20} className="text-accent-500"/> Son Hareketler
-              </h3>
-              <Link to="/shipments" className="text-sm font-bold text-brand-600 hover:text-brand-700 flex items-center gap-1 group">
-                Tümünü Gör <ArrowRight size={16} className="group-hover:translate-x-1 transition-transform" />
-              </Link>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead className="bg-slate-50/50 text-slate-500 font-bold text-xs uppercase tracking-wider">
-                  <tr>
-                    <th className="p-4">Referans</th>
-                    <th className="p-4">Müşteri</th>
-                    <th className="p-4">Durum</th>
-                    <th className="p-4 text-right">Tarih</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-50">
-                  {loading ? (
-                    Array(5).fill(0).map((_, i) => (
-                      <tr key={i}>
-                        <td className="p-4"><Skeleton className="h-4 w-24" /></td>
-                        <td className="p-4"><div className="flex items-center gap-2"><Skeleton className="h-8 w-8 rounded-full" /><Skeleton className="h-4 w-32" /></div></td>
-                        <td className="p-4"><Skeleton className="h-6 w-20 rounded-full" /></td>
-                        <td className="p-4"><Skeleton className="h-4 w-16 ml-auto" /></td>
-                      </tr>
-                    ))
-                  ) : stats.recentActivity.length === 0 ? (
-                    <tr><td colSpan={4} className="p-8 text-center text-slate-400">Henüz işlem yok.</td></tr>
-                  ) : (
-                    stats.recentActivity.map((item) => (
-                      <tr key={item.id} className="hover:bg-slate-50/80 transition group cursor-pointer">
-                        <td className="p-4 font-mono font-bold text-brand-600 group-hover:text-brand-700">{item.reference_no}</td>
-                        <td className="p-4 font-medium text-slate-800">{item.customers?.name || '-'}</td>
-                        <td className="p-4">
-                          <span className={clsx("px-3 py-1 rounded-full text-xs font-bold shadow-sm border", 
-                             item.status === 'Teslim Edildi' ? "bg-green-50 text-green-700 border-green-100" :
-                             item.status === 'Yolda (On Board)' ? "bg-blue-50 text-blue-700 border-blue-100" :
-                             "bg-slate-50 text-slate-600 border-slate-100"
-                          )}>
-                            {item.status}
-                          </span>
-                        </td>
-                        <td className="p-4 text-right text-slate-400 text-xs">
-                          {new Date(item.created_at).toLocaleDateString('tr-TR')}
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* Upcoming Checks */}
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden animate-slide-up" style={{ animationDelay: '400ms' }}>
-             <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/30">
-                <h3 className="font-bold text-brand-900 text-lg flex items-center gap-2">
-                   <Banknote size={20} className="text-red-500"/> Yaklaşan Ödemeler
-                </h3>
-                <Link to="/checks" className="text-sm font-bold text-brand-600 hover:text-brand-700">Yönet</Link>
-             </div>
-             <div className="p-6 grid gap-4">
-                {loading ? (
-                   Array(3).fill(0).map((_,i) => (
-                      <div key={i} className="flex justify-between items-center p-4 border rounded-xl">
-                         <div className="space-y-2"><Skeleton className="h-4 w-32" /><Skeleton className="h-3 w-20" /></div>
-                         <Skeleton className="h-6 w-24" />
-                      </div>
-                   ))
-                ) : stats.upcomingChecks.length === 0 ? (
-                   <div className="text-center py-8 text-slate-400 flex flex-col items-center bg-slate-50/50 rounded-xl border border-dashed border-slate-200">
-                      <CheckCircle className="mb-2 text-green-400" size={32} />
-                      <p>Yakın vadeli ödeme bulunmuyor.</p>
-                   </div>
-                ) : (
-                   stats.upcomingChecks.map((check: any) => (
-                      <div key={check.id} className="flex items-center justify-between p-4 border border-red-100 bg-gradient-to-r from-red-50/50 to-white rounded-xl hover:shadow-md transition">
-                         <div className="flex items-center gap-4">
-                            <div className="bg-white p-2 rounded-xl border border-red-100 text-red-500 font-bold text-xs flex flex-col items-center min-w-[50px] shadow-sm">
-                               <span className="text-lg leading-none">{new Date(check.due_date).getDate()}</span>
-                               <span className="text-[10px] uppercase">{new Date(check.due_date).toLocaleString('tr-TR', {month: 'short'})}</span>
-                            </div>
-                            <div>
-                               <p className="font-bold text-brand-900">{check.party_name}</p>
-                               <p className="text-xs text-slate-500">Ref: {check.reference_no}</p>
-                            </div>
-                         </div>
-                         <p className="font-mono font-bold text-red-600 bg-white px-3 py-1 rounded-lg border border-red-100 shadow-sm">
-                            {check.amount.toLocaleString()} {check.currency}
-                         </p>
-                      </div>
-                   ))
-                )}
-             </div>
-          </div>
-
-        </div>
-
-        {/* Right Sidebar */}
-        <div className="space-y-8 animate-slide-in-right" style={{ animationDelay: '500ms' }}>
            
-           {/* Currency Rates */}
-           <div className="bg-brand-900 text-white rounded-2xl shadow-xl p-6 relative overflow-hidden group">
-              <div className="relative z-10">
-                 <h3 className="font-bold text-lg mb-6 flex items-center gap-2">
-                    <Coins size={20} className="text-accent-500"/> Döviz Kurları
-                 </h3>
-                 <div className="space-y-4">
-                    {loading ? Array(3).fill(0).map((_, i) => (
-                       <div key={i} className="flex justify-between items-center py-2 border-b border-white/10">
-                          <Skeleton className="bg-white/20 h-4 w-16" />
-                          <Skeleton className="bg-white/20 h-4 w-12" />
-                       </div>
-                    )) : rates.map((r, i) => (
-                       <div key={i} className="flex items-center justify-between py-2 border-b border-white/10 last:border-0">
-                          <div className="flex items-center gap-3">
-                             <span className="font-bold text-brand-100 bg-white/10 px-2 py-1 rounded text-xs">{r.pair}</span>
-                          </div>
-                          <div className="text-right">
-                             <p className="font-mono font-bold text-lg tracking-wider">{r.rate.toFixed(2)}</p>
-                             <p className={clsx("text-[10px] flex items-center justify-end gap-1 font-bold", r.trend === 'up' ? "text-green-400" : "text-red-400")}>
-                                {r.trend === 'up' ? <TrendingUp size={10}/> : <TrendingDown size={10}/>} %{Math.abs(r.change)}
-                             </p>
-                          </div>
-                       </div>
+           {/* FORECAST CHART */}
+           <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden animate-in slide-in-from-bottom-4">
+              <div className="p-6 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-center bg-gradient-to-r from-slate-50 to-white gap-4">
+                 <div>
+                    <h3 className="font-bold text-brand-900 flex items-center gap-2">
+                       <BarChart3 size={20} className="text-purple-500"/> Nakit Akış Tahmini (30 Gün)
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-1">Önümüzdeki 4 haftalık tahsilat و ödeme planı.</p>
+                 </div>
+                 
+                 <div className="bg-white border border-slate-200 p-1 rounded-lg flex items-center shadow-sm">
+                    {['USD', 'EUR', 'GBP', 'TRY'].map((curr) => (
+                       <button
+                          key={curr}
+                          onClick={() => setForecastCurrency(curr as any)}
+                          className={clsx(
+                             "px-3 py-1.5 rounded-md text-xs font-bold transition-all",
+                             forecastCurrency === curr ? "bg-purple-600 text-white shadow-sm" : "text-slate-500 hover:text-slate-700 hover:bg-slate-50"
+                          )}
+                       >
+                          {curr}
+                       </button>
                     ))}
                  </div>
               </div>
-              {/* Animated Decorative Blob */}
-              <div className="absolute top-0 right-0 w-40 h-40 bg-accent-500 rounded-full blur-[60px] opacity-20 -mr-10 -mt-10 animate-pulse-slow"></div>
-              <div className="absolute bottom-0 left-0 w-32 h-32 bg-blue-500 rounded-full blur-[50px] opacity-20 -ml-10 -mb-10 animate-float"></div>
+              <div className="p-6">
+                 {loadingForecast ? (
+                     <div className="h-[250px] flex items-center justify-center">
+                         <Loader2 className="animate-spin text-slate-300" size={32}/>
+                     </div>
+                 ) : (
+                     <div className="h-[250px] w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                           <BarChart data={forecastChartData} barGap={4} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                              <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#94a3b8'}} dy={10}/>
+                              <YAxis axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#94a3b8'}} />
+                              <Tooltip 
+                                 contentStyle={{borderRadius: '12px', border: 'none', boxShadow: '0 4px 20px -2px rgba(0,0,0,0.1)'}}
+                                 labelStyle={{fontWeight: 'bold', color: '#1e293b', marginBottom: '5px'}}
+                                 formatter={(value: number) => [`${value.toLocaleString()} ${forecastCurrency}`, '']}
+                              />
+                              <Legend verticalAlign="top" iconType="circle" height={36}/>
+                              <Bar dataKey="income" name="Gelecek Para" fill="#10b981" radius={[4, 4, 0, 0]} barSize={20} />
+                              <Bar dataKey="expense" name="Çıkacak Para" fill="#ef4444" radius={[4, 4, 0, 0]} barSize={20} />
+                           </BarChart>
+                        </ResponsiveContainer>
+                     </div>
+                 )}
+              </div>
+              <div className="bg-slate-50 p-3 flex justify-around text-xs border-t border-slate-100">
+                  <div className="text-center">
+                      <span className="block text-slate-400 font-bold uppercase">Toplam Beklenen</span>
+                      <span className="text-lg font-black text-brand-900">{(forecastSummary.income).toLocaleString()} {forecastCurrency}</span>
+                  </div>
+                  <div className="text-center">
+                      <span className="block text-slate-400 font-bold uppercase">Toplam Ödenecek</span>
+                      <span className="text-lg font-black text-red-600">{(forecastSummary.expense).toLocaleString()} {forecastCurrency}</span>
+                  </div>
+                  <div className="text-center">
+                      <span className="block text-slate-400 font-bold uppercase">Net Fark</span>
+                      <span className={clsx("text-lg font-black", (forecastSummary.income - forecastSummary.expense) >= 0 ? "text-green-600" : "text-red-500")}>
+                          {(forecastSummary.income - forecastSummary.expense).toLocaleString()} {forecastCurrency}
+                      </span>
+                  </div>
+              </div>
            </div>
 
-           {/* Quick Actions */}
-           <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
-              <h3 className="font-bold text-brand-900 mb-4">Hızlı İşlemler</h3>
-              <div className="space-y-3">
-                 <Link to="/shipments" className="flex w-full items-center justify-between bg-slate-50 hover:bg-white hover:shadow-md border border-slate-200 text-slate-700 p-4 rounded-xl font-bold text-sm transition-all group">
-                    <span>+ Yeni Dosya Oluştur</span>
-                    <ArrowRight size={16} className="text-slate-400 group-hover:text-brand-600 group-hover:translate-x-1 transition" />
-                 </Link>
-                 <Link to="/calculator" className="flex w-full items-center justify-between bg-slate-50 hover:bg-white hover:shadow-md border border-slate-200 text-slate-700 p-4 rounded-xl font-bold text-sm transition-all group">
-                    <span>Navlun Hesapla</span>
-                    <ArrowRight size={16} className="text-slate-400 group-hover:text-brand-600 group-hover:translate-x-1 transition" />
-                 </Link>
-                 <Link to="/offers" className="flex w-full items-center justify-between bg-slate-50 hover:bg-white hover:shadow-md border border-slate-200 text-slate-700 p-4 rounded-xl font-bold text-sm transition-all group">
-                    <span>Teklif Hazırla</span>
-                    <ArrowRight size={16} className="text-slate-400 group-hover:text-brand-600 group-hover:translate-x-1 transition" />
-                 </Link>
+           {/* Historical Chart Section */}
+           <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+              <div className="p-6 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-center gap-4">
+                 <div>
+                    <h3 className="font-bold text-brand-900 flex items-center gap-2">
+                       <Activity size={20} className="text-accent-500"/> Geçmiş Nakit Akışı
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-1">Son 7 günlük gerçekleşen gelir و gider.</p>
+                 </div>
+                 
+                 <div className="bg-slate-100 p-1 rounded-lg flex items-center shadow-sm border border-slate-200">
+                    {['USD', 'EUR', 'GBP', 'TRY'].map((curr) => (
+                       <button
+                          key={curr}
+                          onClick={() => setChartCurrency(curr as any)}
+                          className={clsx(
+                             "px-3 py-1.5 rounded-md text-xs font-bold transition-all",
+                             chartCurrency === curr ? "bg-white text-brand-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
+                          )}
+                       >
+                          {curr}
+                       </button>
+                    ))}
+                 </div>
               </div>
+
+              <div className="p-6">
+                 <div className="h-[250px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                       <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                          <defs>
+                             <linearGradient id="colorIncome" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor="#10b981" stopOpacity={0.2}/>
+                                <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                             </linearGradient>
+                             <linearGradient id="colorExpense" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor="#ef4444" stopOpacity={0.2}/>
+                                <stop offset="95%" stopColor="#ef4444" stopOpacity={0}/>
+                             </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                          <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#94a3b8'}} dy={10}/>
+                          <YAxis axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#94a3b8'}} />
+                          <Tooltip 
+                             contentStyle={{borderRadius: '12px', border: 'none', boxShadow: '0 4px 20px -2px rgba(0,0,0,0.1)'}}
+                             labelStyle={{fontWeight: 'bold', color: '#1e293b', marginBottom: '5px'}}
+                             formatter={(value: number) => [`${value.toLocaleString()} ${chartCurrency}`, '']}
+                          />
+                          <Area type="monotone" dataKey="income" name="Gelir" stroke="#10b981" strokeWidth={3} fillOpacity={1} fill="url(#colorIncome)" />
+                          <Area type="monotone" dataKey="expense" name="Gider" stroke="#ef4444" strokeWidth={3} fillOpacity={1} fill="url(#colorExpense)" />
+                       </AreaChart>
+                    </ResponsiveContainer>
+                 </div>
+              </div>
+           </div>
+
+           {/* Recent Activity Table */}
+           <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+              <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+                 <h3 className="font-bold text-brand-900 text-lg">Son İşlemler</h3>
+                 <Link to="/shipments" className="text-xs font-bold text-brand-600 hover:text-brand-800 flex items-center gap-1">Tümünü Gör <ArrowRight size={12}/></Link>
+              </div>
+              <div className="overflow-x-auto">
+                 <table className="w-full text-left text-sm">
+                    <thead className="bg-slate-50 text-slate-500 font-bold text-xs uppercase">
+                       <tr><th className="p-4">Ref No</th><th className="p-4">Müşteri</th><th className="p-4">Durum</th><th className="p-4 text-right">Tarih</th></tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                       {loadingStats ? (
+                          <tr><td colSpan={4} className="p-6 text-center text-slate-400">Yükleniyor...</td></tr>
+                       ) : stats.recentActivity.length === 0 ? (
+                          <tr><td colSpan={4} className="p-6 text-center text-slate-400">Kayıt yok.</td></tr>
+                       ) : (
+                          (stats.recentActivity || []).map((item: any) => {
+                             const customers = item.customers as any;
+                             const customerName = customers ? (Array.isArray(customers) ? customers[0]?.name : customers.name) : '-';
+                             const statusStr: string = String(item.status || '');
+                             return (
+                               <tr key={item.id} className="hover:bg-slate-50 transition">
+                                  <td className="p-4 font-mono font-bold text-brand-600">{String(item.reference_no || '')}</td>
+                                  <td className="p-4 font-medium">{String(customerName || '-')}</td>
+                                  <td className="p-4"><span className={clsx("px-2 py-1 rounded text-[10px] font-bold uppercase border", statusStr === 'Teslim Edildi' ? "bg-green-50 text-green-700 border-green-100" : statusStr === 'İptal' ? "bg-red-50 text-red-700 border-red-100" : "bg-blue-50 text-blue-700 border-blue-100")}>{statusStr}</span></td>
+                                  <td className="p-4 text-right text-xs text-slate-400">{item.created_at ? new Date(String(item.created_at)).toLocaleDateString('tr-TR') : '-'}</td>
+                               </tr>
+                             );
+                          })
+                       )}
+                    </tbody>
+                 </table>
+              </div>
+           </div>
+        </div>
+
+        {/* Right Sidebar: Calendar & Currency */}
+        <div className="space-y-8">
+           
+           <div className="h-[600px]">
+               <CalendarWidget 
+                  events={calendarEvents} 
+                  onMonthChange={(y, m) => setCalendarMonth({ year: y, month: m })}
+                  onAddNote={handleAddNote}
+               />
+           </div>
+
+           {/* GÖREV YÖNETİCİSİ (Task Manager) Widget */}
+           <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                <div className="p-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
+                    <h3 className="font-bold text-brand-900 flex items-center gap-2"><CheckSquare size={18} className="text-blue-500"/> Görev Yöneticisi</h3>
+                    <Link to="/tasks" className="text-[10px] font-bold text-brand-600 hover:underline uppercase">Tümü</Link>
+                </div>
+                <div className="p-4 space-y-3 max-h-[300px] overflow-y-auto custom-scrollbar">
+                    {loadingTasks ? (
+                        <div className="py-8 text-center"><Loader2 className="animate-spin text-slate-300 mx-auto" size={24}/></div>
+                    ) : (tasksData || []).filter((t: Task) => !t.isCompleted).length === 0 ? (
+                        <div className="py-8 text-center text-slate-400 text-xs italic">Aktif görev bulunmuyor.</div>
+                    ) : (
+                        (tasksData || []).filter((t: Task) => !t.isCompleted).slice(0, 5).map((task: Task) => (
+                            <div key={task.id} className="flex items-start gap-3 p-2 hover:bg-slate-50 rounded-lg group transition border border-transparent hover:border-slate-100">
+                                <button onClick={() => toggleTaskStatus(task.id, task.isCompleted)} className="mt-0.5 text-slate-300 hover:text-green-500 transition">
+                                    <Circle size={16}/>
+                                </button>
+                                <div className="flex-1 min-w-0">
+                                    <p className="text-xs font-bold text-slate-700 truncate">{task.title}</p>
+                                    <p className="text-[10px] text-slate-400 mt-0.5">
+                                        {task.dueDate ? new Date(task.dueDate).toLocaleDateString('tr-TR') : 'Süresiz'}
+                                    </p>
+                                </div>
+                                <span className={clsx("text-[8px] font-bold px-1.5 py-0.5 rounded border uppercase", 
+                                    task.priority === 'high' ? 'bg-red-50 text-red-600 border-red-100' : 
+                                    task.priority === 'medium' ? 'bg-orange-50 text-orange-600 border-orange-100' : 
+                                    'bg-green-50 text-green-600 border-green-100'
+                                )}>{task.priority}</span>
+                            </div>
+                        ))
+                    )}
+                </div>
+           </div>
+
+           {/* Currency Rates Display */}
+           <div className="bg-brand-900 text-white rounded-2xl p-6 shadow-xl relative overflow-hidden">
+              <div className="relative z-10">
+                 <div className="flex justify-between items-center mb-4">
+                    <h3 className="font-bold text-lg flex items-center gap-2"><Coins size={20} className="text-accent-500"/> Operasyonel Kur</h3>
+                    <div className="flex gap-2">
+                        <button 
+                            onClick={handleUpdateRates}
+                            className="text-[10px] bg-white/10 hover:bg-white/20 px-2 py-1 rounded transition flex items-center gap-1"
+                            disabled={updatingRates}
+                        >
+                            {updatingRates ? <Loader2 size={12} className="animate-spin"/> : <RefreshCw size={12}/>} Update
+                        </button>
+                    </div>
+                 </div>
+                 <div className="space-y-3">
+                    {Object.entries(currencyRates).map(([code, rate], i) => (
+                       code !== 'USD' && (
+                           <div key={i} className="flex justify-between items-center p-3 bg-white/5 rounded-xl border border-white/10 hover:bg-white/10 transition">
+                              <div className="flex items-center gap-3"><div className="bg-accent-500/20 p-1.5 rounded text-accent-400 text-xs font-bold">{code} / USD</div></div>
+                              <div className="text-right"><p className="font-mono font-bold text-sm">{String(rate)}</p></div>
+                           </div>
+                       )
+                    ))}
+                 </div>
+              </div>
+              <div className="absolute -right-10 -top-10 w-40 h-40 bg-accent-500 rounded-full blur-[80px] opacity-20"></div>
            </div>
 
         </div>

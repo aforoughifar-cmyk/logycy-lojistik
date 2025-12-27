@@ -1,9 +1,11 @@
+
 import React, { useEffect, useState } from 'react';
 import { supabaseService } from '../services/supabaseService';
 import { Offer, Customer, OfferStatus, ShipmentStatus } from '../types';
 import { Plus, Search, FileText, CheckCircle, XCircle, Trash2, ArrowRight, Printer, X, Truck, Calendar, MapPin, Mail, Phone } from 'lucide-react';
 import clsx from 'clsx';
 import { useNavigate } from 'react-router-dom';
+import SearchableSelect from '../components/SearchableSelect';
 
 const Offers: React.FC = () => {
   const [offers, setOffers] = useState<Offer[]>([]);
@@ -15,6 +17,9 @@ const Offers: React.FC = () => {
   // Print Modal State
   const [showPrintModal, setShowPrintModal] = useState(false);
   const [selectedOffer, setSelectedOffer] = useState<Offer | null>(null);
+  
+  // Settings for Print
+  const [settings, setSettings] = useState<any>({});
 
   const navigate = useNavigate();
 
@@ -33,6 +38,8 @@ const Offers: React.FC = () => {
 
   useEffect(() => {
     loadData();
+    const saved = localStorage.getItem('invoiceSettings');
+    if(saved) setSettings(JSON.parse(saved));
   }, []);
 
   const loadData = async () => {
@@ -81,7 +88,7 @@ const Offers: React.FC = () => {
        referenceNo: `LOG-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,
        customerId: offer.customerId,
        transportMode: offer.transportMode,
-       loadType: 'FCL', // Default
+       loadType: 'FCL' as 'FCL' | 'LCL', // Cast explicitly
        description: offer.description,
        origin: offer.origin,
        destination: offer.destination,
@@ -218,16 +225,14 @@ const Offers: React.FC = () => {
             </div>
             <form onSubmit={handleCreate} className="p-6 space-y-4">
               <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase">Müşteri</label>
-                  <select 
-                    required 
-                    className="w-full border border-slate-200 rounded-xl p-3 text-sm outline-none bg-slate-50"
-                    value={formData.customerId} 
-                    onChange={e => setFormData({...formData, customerId: e.target.value})}
-                  >
-                    <option value="">Seçiniz...</option>
-                    {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                  </select>
+                  <label className="text-xs font-bold text-slate-500 uppercase block mb-1">Müşteri</label>
+                  <SearchableSelect
+                      options={customers.map(c => ({ id: c.id, label: c.name }))}
+                      value={formData.customerId || ''}
+                      onChange={(val) => setFormData({...formData, customerId: val})}
+                      placeholder="Müşteri Ara..."
+                      required
+                  />
               </div>
               
               <div className="grid grid-cols-2 gap-4">
@@ -285,10 +290,10 @@ const Offers: React.FC = () => {
         </div>
        )}
 
-       {/* Print Preview Modal */}
+       {/* Print Preview Modal - Identical PDF Output */}
        {showPrintModal && selectedOffer && (
-         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 p-0 backdrop-blur-sm overflow-auto print:p-0 print:bg-white print:static print:block">
-           <div className="bg-white w-full max-w-4xl min-h-[800px] shadow-2xl m-4 print:m-0 print:shadow-none print:w-full relative animate-in fade-in duration-300">
+         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 p-0 backdrop-blur-sm overflow-auto print:p-0 print:bg-white print:fixed print:inset-0 print:z-[9999] print:block">
+           <div className="bg-white w-full max-w-4xl min-h-[800px] shadow-2xl m-4 print:m-0 print:shadow-none print:w-full print:h-auto print:border-none relative animate-in fade-in duration-300">
              
              {/* Toolbar - Hidden in Print */}
              <div className="absolute top-0 right-0 p-4 flex gap-2 print:hidden">
@@ -307,24 +312,19 @@ const Offers: React.FC = () => {
              </div>
 
              {/* Document Content */}
-             <div className="p-12 md:p-16 print:p-10 text-slate-900">
+             <div className="p-12 md:p-16 print:p-10 text-slate-900 font-serif">
                 
                 {/* Header */}
-                <div className="flex justify-between items-start border-b-2 border-brand-900 pb-8 mb-8">
-                   <div>
-                      <div className="flex items-center gap-3 font-bold text-3xl tracking-wider text-brand-900 mb-2">
-                         <div className="bg-accent-500 p-2 rounded-lg print:bg-transparent print:p-0">
-                           <Truck size={28} className="text-brand-900" />
-                         </div>
-                         LOGYCY
-                      </div>
-                      <p className="text-slate-500 text-sm max-w-xs">
-                        Uluslararası Taşımacılık ve Lojistik Hizmetleri<br/>
-                        Gazimağusa, KKTC
+                <div className="flex justify-between items-start border-b-2 border-slate-800 pb-8 mb-8">
+                   <div className="w-1/2">
+                      {settings.logoUrl && <img src={settings.logoUrl} className="h-16 mb-4 object-contain" alt="Logo" />}
+                      <h2 className="font-bold text-xl uppercase" style={{color: settings.primaryColor || '#000'}}>{settings.companyName || 'LOGYCY LOGISTICS'}</h2>
+                      <p className="text-slate-500 text-xs mt-1 whitespace-pre-line">
+                        {settings.address} {'\n'} {settings.phone}
                       </p>
                    </div>
                    <div className="text-right">
-                      <h2 className="text-4xl font-extrabold text-slate-200 uppercase tracking-widest mb-2">FİYAT TEKLİFİ</h2>
+                      <h2 className="text-4xl font-extrabold text-slate-200 uppercase tracking-widest mb-2 print:text-gray-300">FİYAT TEKLİFİ</h2>
                       <p className="font-bold text-slate-700">Tarih: {new Date(selectedOffer.created_at || Date.now()).toLocaleDateString('tr-TR')}</p>
                       <p className="text-slate-500 text-sm">Teklif No: OFF-{selectedOffer.id.substring(0, 6).toUpperCase()}</p>
                    </div>
@@ -334,8 +334,7 @@ const Offers: React.FC = () => {
                 <div className="grid grid-cols-2 gap-12 mb-12">
                    <div>
                       <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Sayın / Firma</h3>
-                      <p className="text-xl font-bold text-brand-900">{selectedOffer.customerName}</p>
-                      {/* We could fetch address here if we had it joined, for now just name */}
+                      <p className="text-xl font-bold text-brand-900 print:text-black">{selectedOffer.customerName}</p>
                    </div>
                    <div className="text-right">
                       <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Geçerlilik Tarihi</h3>
@@ -346,9 +345,9 @@ const Offers: React.FC = () => {
                 </div>
 
                 {/* Route Info */}
-                <div className="bg-slate-50 border border-slate-200 rounded-xl p-6 mb-12 flex justify-between items-center print:border print:bg-white">
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-6 mb-12 flex justify-between items-center print:border print:bg-white print:border-gray-300">
                    <div className="flex items-center gap-3">
-                      <MapPin className="text-brand-500" />
+                      <MapPin className="text-brand-500 print:text-black" />
                       <div>
                          <span className="text-xs font-bold text-slate-400 block">ÇIKIŞ</span>
                          <span className="font-bold text-lg">{selectedOffer.origin}</span>
@@ -360,19 +359,19 @@ const Offers: React.FC = () => {
                          <span className="text-xs font-bold text-slate-400 block">VARIŞ</span>
                          <span className="font-bold text-lg">{selectedOffer.destination}</span>
                       </div>
-                      <MapPin className="text-accent-500" />
+                      <MapPin className="text-accent-500 print:text-black" />
                    </div>
                 </div>
 
                 {/* Service Details */}
                 <div className="mb-12">
-                   <h3 className="font-bold text-brand-900 border-b border-slate-200 pb-2 mb-4">HİZMET DETAYLARI & FİYATLANDIRMA</h3>
+                   <h3 className="font-bold text-brand-900 border-b border-slate-200 pb-2 mb-4 print:text-black">HİZMET DETAYLARI & FİYATLANDIRMA</h3>
                    <table className="w-full text-left">
-                      <thead className="bg-brand-900 text-white text-sm">
+                      <thead className="bg-brand-900 text-white text-sm print:bg-gray-100 print:text-black print:border-b print:border-black">
                          <tr>
-                            <th className="p-3 rounded-l-lg">Açıklama</th>
+                            <th className="p-3 rounded-l-lg print:rounded-none">Açıklama</th>
                             <th className="p-3">Taşıma Modu</th>
-                            <th className="p-3 text-right rounded-r-lg">Tutar</th>
+                            <th className="p-3 text-right rounded-r-lg print:rounded-none">Tutar</th>
                          </tr>
                       </thead>
                       <tbody className="text-slate-700">
@@ -384,9 +383,9 @@ const Offers: React.FC = () => {
                       </tbody>
                    </table>
                    <div className="flex justify-end mt-4">
-                      <div className="bg-accent-50 p-4 rounded-xl text-right w-64 print:border print:bg-white">
+                      <div className="bg-accent-50 p-4 rounded-xl text-right w-64 print:border print:border-gray-300 print:bg-white">
                          <span className="block text-xs font-bold text-slate-500 uppercase">TOPLAM TEKLİF</span>
-                         <span className="block text-2xl font-extrabold text-brand-900">{selectedOffer.price.toLocaleString()} {selectedOffer.currency}</span>
+                         <span className="block text-2xl font-extrabold text-brand-900 print:text-black">{selectedOffer.price.toLocaleString()} {selectedOffer.currency}</span>
                       </div>
                    </div>
                 </div>
@@ -403,10 +402,10 @@ const Offers: React.FC = () => {
                    
                    <div className="flex justify-between items-end">
                       <div>
-                         <p className="font-bold text-brand-900">LOGYCY LOJİSTİK HİZMETLERİ</p>
+                         <p className="font-bold text-brand-900 print:text-black">{settings.companyName}</p>
                          <div className="flex gap-4 mt-2 text-xs">
-                            <span className="flex items-center gap-1"><Mail size={12}/> info@logycy.com</span>
-                            <span className="flex items-center gap-1"><Phone size={12}/> +90 533 000 0000</span>
+                            <span className="flex items-center gap-1"><Mail size={12}/> {settings.email}</span>
+                            <span className="flex items-center gap-1"><Phone size={12}/> {settings.phone}</span>
                          </div>
                       </div>
                       <div className="text-center w-40">

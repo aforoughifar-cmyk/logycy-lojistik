@@ -1,7 +1,8 @@
+
 import React, { useEffect, useState } from 'react';
 import { supabaseService } from '../services/supabaseService';
 import { Vehicle } from '../types';
-import { Plus, Search, Truck, PenTool, Battery, User, Activity, AlertCircle, X, Trash2 } from 'lucide-react';
+import { Plus, Search, Truck, PenTool, Battery, User, Activity, AlertCircle, X, Trash2, Edit, Archive } from 'lucide-react';
 import clsx from 'clsx';
 import toast from 'react-hot-toast';
 
@@ -10,6 +11,8 @@ const Fleet: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [showModal, setShowModal] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [filterType, setFilterType] = useState<'active' | 'archived'>('active');
 
   const [formData, setFormData] = useState<Partial<Vehicle>>({
     plateNo: '',
@@ -33,11 +36,36 @@ const Fleet: React.FC = () => {
     setLoading(false);
   };
 
-  const handleCreate = async (e: React.FormEvent) => {
+  const handleOpenCreate = () => {
+      setEditingId(null);
+      setFormData({ plateNo: '', type: 'Kamyon', brand: '', model: '', driverName: '', status: 'Aktif', fuelLevel: 50, lastMaintenance: '' });
+      setShowModal(true);
+  };
+
+  const handleOpenEdit = (v: Vehicle) => {
+      setEditingId(v.id);
+      setFormData({
+          plateNo: v.plateNo,
+          type: v.type,
+          brand: v.brand,
+          model: v.model,
+          driverName: v.driverName,
+          status: v.status,
+          fuelLevel: v.fuelLevel,
+          lastMaintenance: v.lastMaintenance || ''
+      });
+      setShowModal(true);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    await supabaseService.addVehicle(formData);
-    toast.success('Araç eklendi');
-    setFormData({ plateNo: '', type: 'Kamyon', brand: '', model: '', driverName: '', status: 'Aktif', fuelLevel: 50, lastMaintenance: '' });
+    if (editingId) {
+        await supabaseService.updateVehicle(editingId, formData);
+        toast.success('Araç güncellendi');
+    } else {
+        await supabaseService.addVehicle(formData);
+        toast.success('Araç eklendi');
+    }
     setShowModal(false);
     loadData();
   };
@@ -49,7 +77,13 @@ const Fleet: React.FC = () => {
     loadData();
   };
 
-  const filtered = vehicles.filter(v => v.plateNo.toLowerCase().includes(searchTerm.toLowerCase()));
+  const filtered = vehicles.filter(v => {
+      const matchSearch = v.plateNo.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchStatus = filterType === 'active' 
+        ? v.status !== 'Tamamlandı' && v.status !== 'Arşiv' 
+        : v.status === 'Tamamlandı' || v.status === 'Arşiv';
+      return matchSearch && matchStatus;
+  });
 
   const getStatusColor = (status: string) => {
       switch(status) {
@@ -57,6 +91,8 @@ const Fleet: React.FC = () => {
           case 'Seferde': return 'bg-blue-100 text-blue-700';
           case 'Bakımda': return 'bg-orange-100 text-orange-700';
           case 'Garajda': return 'bg-slate-100 text-slate-700';
+          case 'Tamamlandı': return 'bg-gray-100 text-gray-500';
+          case 'Arşiv': return 'bg-gray-100 text-gray-500';
           default: return 'bg-slate-100 text-slate-700';
       }
   };
@@ -68,12 +104,18 @@ const Fleet: React.FC = () => {
           <h1 className="text-2xl font-bold text-brand-900">Araç / Filo Yönetimi</h1>
           <p className="text-slate-500">Şirket araçları, rütuş ve bakım takibi.</p>
         </div>
-        <button 
-          onClick={() => setShowModal(true)}
-          className="bg-accent-500 text-brand-900 px-5 py-3 rounded-xl hover:bg-accent-400 transition flex items-center gap-2 shadow-lg shadow-accent-500/20 font-bold"
-        >
-          <Plus size={20} /> Yeni Araç Ekle
-        </button>
+        <div className="flex gap-2">
+            <div className="bg-slate-100 p-1 rounded-lg flex">
+                <button onClick={() => setFilterType('active')} className={clsx("px-3 py-1.5 text-sm font-bold rounded-md transition", filterType === 'active' ? "bg-white shadow text-brand-900" : "text-slate-500")}>Aktif</button>
+                <button onClick={() => setFilterType('archived')} className={clsx("px-3 py-1.5 text-sm font-bold rounded-md transition", filterType === 'archived' ? "bg-white shadow text-brand-900" : "text-slate-500")}>Arşiv</button>
+            </div>
+            <button 
+            onClick={handleOpenCreate}
+            className="bg-accent-500 text-brand-900 px-5 py-3 rounded-xl hover:bg-accent-400 transition flex items-center gap-2 shadow-lg shadow-accent-500/20 font-bold"
+            >
+            <Plus size={20} /> Yeni Araç
+            </button>
+        </div>
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
@@ -96,7 +138,7 @@ const Fleet: React.FC = () => {
            ) : filtered.length === 0 ? (
              <div className="col-span-full text-center py-10">
                 <Truck size={40} className="text-slate-300 mx-auto mb-3" />
-                <p className="text-slate-500">Kayıtlı araç bulunamadı.</p>
+                <p className="text-slate-500">Araç bulunamadı.</p>
              </div>
            ) : (
              filtered.map(v => (
@@ -141,12 +183,10 @@ const Fleet: React.FC = () => {
                      </div>
                   </div>
 
-                  <button 
-                    onClick={() => handleDelete(v.id)}
-                    className="absolute top-4 right-4 p-2 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition"
-                  >
-                     <Trash2 size={18} />
-                  </button>
+                  <div className="absolute top-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button onClick={() => handleOpenEdit(v)} className="p-1.5 bg-white text-slate-400 hover:text-blue-600 rounded shadow-sm border border-slate-100"><Edit size={16}/></button>
+                      <button onClick={() => handleDelete(v.id)} className="p-1.5 bg-white text-slate-400 hover:text-red-600 rounded shadow-sm border border-slate-100"><Trash2 size={16}/></button>
+                  </div>
                </div>
              ))
            )}
@@ -157,10 +197,10 @@ const Fleet: React.FC = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-brand-900/60 p-4 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden animate-in zoom-in-95 duration-200">
             <div className="bg-brand-900 px-6 py-4 flex justify-between items-center">
-              <h3 className="text-white font-bold text-lg">Araç Ekle</h3>
+              <h3 className="text-white font-bold text-lg">{editingId ? 'Araç Düzenle' : 'Yeni Araç Ekle'}</h3>
               <button onClick={() => setShowModal(false)} className="text-white/60 hover:text-white transition"><X size={20} /></button>
             </div>
-            <form onSubmit={handleCreate} className="p-6 space-y-4">
+            <form onSubmit={handleSubmit} className="p-6 space-y-4">
                <div className="grid grid-cols-2 gap-4">
                   <div>
                      <label className="text-xs font-bold text-slate-500 uppercase">Plaka No</label>
@@ -207,6 +247,7 @@ const Fleet: React.FC = () => {
                         <option value="Seferde">Seferde</option>
                         <option value="Garajda">Garajda</option>
                         <option value="Bakımda">Bakımda</option>
+                        <option value="Tamamlandı">Tamamlandı / Arşiv</option>
                      </select>
                   </div>
                   <div>
@@ -217,7 +258,7 @@ const Fleet: React.FC = () => {
                </div>
 
                <div className="pt-4">
-                  <button type="submit" className="w-full bg-accent-500 text-brand-900 py-3 rounded-xl font-bold hover:bg-accent-400 transition shadow-lg shadow-accent-500/20">Kaydet</button>
+                  <button type="submit" className="w-full bg-accent-500 text-brand-900 py-3 rounded-xl font-bold hover:bg-accent-400 transition shadow-lg shadow-accent-500/20">{editingId ? 'Güncelle' : 'Kaydet'}</button>
                </div>
             </form>
           </div>

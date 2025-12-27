@@ -1,9 +1,13 @@
-import React, { useEffect, useState } from 'react';
+
+import React, { useEffect, useState, useRef } from 'react';
 import { supabaseService } from '../services/supabaseService';
 import { InventoryItem, Customer } from '../types';
-import { Plus, Search, Box, Package, User, MapPin, Barcode, Trash2, X, CheckCircle, AlertTriangle, Printer, QrCode } from 'lucide-react';
+import { Plus, Search, Box, Package, User, MapPin, Barcode, Trash2, X, CheckCircle, AlertTriangle, Printer, QrCode, Camera, RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
 import toast from 'react-hot-toast';
+import SearchableSelect from '../components/SearchableSelect';
+import { GoogleGenAI } from "@google/genai";
+import jsPDF from 'jspdf';
 
 const Warehouse: React.FC = () => {
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
@@ -12,7 +16,15 @@ const Warehouse: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [showModal, setShowModal] = useState(false);
   
-  // Label Modal State
+  // Camera Scanner State
+  const [showScanner, setShowScanner] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [isScanning, setIsScanning] = useState(false);
+  
+  // Custom Unit State
+  const [unitOptions, setUnitOptions] = useState<string[]>(['Adet', 'Koli', 'Palet', 'Kg']);
+
+  // Label Modal State (Preview)
   const [showLabelModal, setShowLabelModal] = useState(false);
   const [selectedItem, setSelectedItem] = useState<InventoryItem | null>(null);
 
@@ -27,9 +39,104 @@ const Warehouse: React.FC = () => {
     entryDate: new Date().toISOString().slice(0, 10)
   });
 
+  // Capacity Configuration (This could be moved to settings later)
+  const MAX_CAPACITY = 10000; 
+
   useEffect(() => {
     loadData();
+    
+    // Load Unit Settings
+    const savedDefs = localStorage.getItem('systemDefinitions');
+    if (savedDefs) {
+        const parsed = JSON.parse(savedDefs);
+        if (parsed.quantityUnits && parsed.quantityUnits.length > 0) {
+            setUnitOptions(parsed.quantityUnits);
+            setFormData(prev => ({...prev, unit: parsed.quantityUnits[0] as any}));
+        }
+    }
   }, []);
+
+  // --- CAMERA LOGIC ---
+  const startCamera = async () => {
+      setShowScanner(true);
+      try {
+          const stream = await navigator.mediaDevices.getUserMedia({ 
+              video: { facingMode: 'environment' } // Prefer back camera
+          });
+          if (videoRef.current) {
+              videoRef.current.srcObject = stream;
+          }
+      } catch (err) {
+          toast.error("Kamera erişimi reddedildi veya bulunamadı.");
+          setShowScanner(false);
+      }
+  };
+
+  const stopCamera = () => {
+      if (videoRef.current && videoRef.current.srcObject) {
+          const stream = videoRef.current.srcObject as MediaStream;
+          stream.getTracks().forEach(t => t.stop());
+          videoRef.current.srcObject = null;
+      }
+      setShowScanner(false);
+  };
+
+  const captureAndAnalyze = async () => {
+      if (!videoRef.current) return;
+      setIsScanning(true);
+
+      try {
+          // Capture frame
+          const canvas = document.createElement('canvas');
+          canvas.width = videoRef.current.videoWidth;
+          canvas.height = videoRef.current.videoHeight;
+          const ctx = canvas.getContext('2d');
+          ctx?.drawImage(videoRef.current, 0, 0);
+          const base64Data = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+
+          // Stop camera immediately to save battery/resources
+          stopCamera();
+
+          // Send to Gemini
+          const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+          const prompt = `
+            Analyze this image of a product label or cargo box. 
+            Extract details into JSON:
+            - sku: Barcode number or SKU code found.
+            - name: Product description or name.
+            - quantity: Quantity if visible (number).
+            - unit: Unit type (Koli, Adet, Palet, Kg) - guess based on image.
+            - location: If there is a shelf code (like A-12, B3), extract it.
+            
+            Return JSON only.
+          `;
+
+          const response = await ai.models.generateContent({
+              model: 'gemini-2.5-flash',
+              contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: 'image/jpeg', data: base64Data } }] }],
+              config: { responseMimeType: 'application/json' }
+          });
+
+          const extracted = JSON.parse(response.text || '{}');
+          
+          setFormData(prev => ({
+              ...prev,
+              sku: extracted.sku || prev.sku,
+              name: extracted.name || prev.name,
+              quantity: extracted.quantity || prev.quantity,
+              unit: extracted.unit || prev.unit,
+              location: extracted.location || prev.location
+          }));
+
+          toast.success("Ürün bilgileri tarandı!");
+
+      } catch (error: any) {
+          console.error(error);
+          toast.error("Tarama başarısız: " + error.message);
+      } finally {
+          setIsScanning(false);
+      }
+  };
 
   const loadData = async () => {
     setLoading(true);
@@ -44,10 +151,16 @@ const Warehouse: React.FC = () => {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    await supabaseService.addInventoryItem(formData);
+    // Auto generate SKU if empty
+    const finalData = { ...formData };
+    if (!finalData.sku) {
+        finalData.sku = `LOG-${Math.floor(100000 + Math.random() * 900000)}`;
+    }
+
+    await supabaseService.addInventoryItem(finalData);
     toast.success('Ürün girişi yapıldı');
     setFormData({
-        name: '', sku: '', quantity: 0, unit: 'Adet', location: '', 
+        name: '', sku: '', quantity: 0, unit: unitOptions[0] as any, location: '', 
         status: 'Stokta', ownerName: '', entryDate: new Date().toISOString().slice(0, 10)
     });
     setShowModal(false);
@@ -61,9 +174,103 @@ const Warehouse: React.FC = () => {
     loadData();
   };
 
-  const handleOpenLabel = (item: InventoryItem) => {
-      setSelectedItem(item);
-      setShowLabelModal(true);
+  // --- VECTOR LABEL PRINTING (Standard High Quality) ---
+  const handlePrintVectorLabel = async (item: InventoryItem) => {
+      const toastId = toast.loading('Etiket hazırlanıyor...');
+      try {
+          // 10cm x 10cm standard logistics label size
+          const doc = new jsPDF({
+              orientation: 'portrait',
+              unit: 'mm',
+              format: [100, 100] 
+          });
+
+          // Helper to center text
+          const centerText = (text: string, y: number, size: number, font: string = 'helvetica', weight: string = 'normal') => {
+              doc.setFont(font, weight);
+              doc.setFontSize(size);
+              const textWidth = doc.getStringUnitWidth(text) * size / 2.822; // approx width
+              const x = (100 - textWidth) / 2;
+              doc.text(text, x + (textWidth/2), y, { align: 'center' });
+          };
+
+          // --- HEADER ---
+          doc.setLineWidth(0.5);
+          doc.rect(2, 2, 96, 96); // Outer Border
+          
+          doc.setFontSize(16);
+          doc.setFont('helvetica', 'bold');
+          doc.text("LOGYCY LOGISTICS", 50, 10, { align: 'center' });
+          
+          doc.setFontSize(8);
+          doc.setFont('helvetica', 'normal');
+          doc.text("WAREHOUSE ENTRY LABEL", 50, 14, { align: 'center' });
+
+          doc.line(2, 16, 98, 16); // Line
+
+          // --- PRODUCT INFO ---
+          doc.setFontSize(10);
+          doc.text("PRODUCT / URUN:", 5, 22);
+          
+          // Multiline product name
+          doc.setFontSize(14);
+          doc.setFont('helvetica', 'bold');
+          const splitTitle = doc.splitTextToSize(item.name.toUpperCase(), 90);
+          doc.text(splitTitle, 5, 28);
+          
+          let yPos = 28 + (splitTitle.length * 6);
+          
+          doc.line(2, yPos, 98, yPos);
+          yPos += 5;
+
+          // --- DETAILS GRID ---
+          doc.setFontSize(9);
+          doc.setFont('helvetica', 'normal');
+          doc.text("CUSTOMER / MUSTERI:", 5, yPos);
+          doc.setFont('helvetica', 'bold');
+          doc.text(item.ownerName?.toUpperCase() || 'UNKNOWN', 5, yPos + 5);
+          
+          doc.setFont('helvetica', 'normal');
+          doc.text("LOCATION / RAF:", 55, yPos);
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(16);
+          doc.text(item.location, 55, yPos + 6);
+
+          yPos += 12;
+          doc.line(2, yPos, 98, yPos);
+          yPos += 5;
+
+          // --- BARCODE SECTION (Code 128) ---
+          // Using a public API to generate a high-res barcode image for the PDF
+          const barcodeUrl = `https://bwipjs-api.metafloor.com/?bcid=code128&text=${item.sku}&scale=3&height=10&incltext&textsize=8`;
+          
+          // Fetch the image
+          const imgBlob = await fetch(barcodeUrl).then(r => r.blob());
+          const reader = new FileReader();
+          
+          await new Promise((resolve) => {
+              reader.onloadend = () => {
+                  const base64data = reader.result as string;
+                  // Add barcode image to PDF
+                  // x=10, y=current, w=80, h=20
+                  doc.addImage(base64data, 'PNG', 10, yPos + 2, 80, 20);
+                  resolve(true);
+              };
+              reader.readAsDataURL(imgBlob);
+          });
+
+          // --- FOOTER ---
+          doc.setFontSize(8);
+          doc.setFont('helvetica', 'normal');
+          doc.text(`QTY: ${item.quantity} ${item.unit} | Date: ${new Date(item.entryDate).toLocaleDateString()}`, 50, 95, { align: 'center' });
+
+          doc.save(`Label_${item.sku}.pdf`);
+          toast.success("Etiket indirildi", { id: toastId });
+
+      } catch (e: any) {
+          console.error(e);
+          toast.error("Etiket oluşturulamadı: " + e.message, { id: toastId });
+      }
   };
 
   const filtered = inventory.filter(item => 
@@ -72,17 +279,60 @@ const Warehouse: React.FC = () => {
     (item.ownerName && item.ownerName.toLowerCase().includes(searchTerm.toLowerCase()))
   );
 
-  const totalItems = filtered.reduce((acc, curr) => acc + curr.quantity, 0);
+  const totalItems = inventory.reduce((acc, curr) => acc + curr.quantity, 0);
+  const occupancyRate = Math.min(Math.round((totalItems / MAX_CAPACITY) * 100), 100);
 
   return (
     <div className="space-y-6">
+      
+      {/* SCANNER MODAL OVERLAY */}
+      {showScanner && (
+          <div className="fixed inset-0 z-[60] bg-black flex flex-col">
+              <div className="absolute top-4 right-4 z-50">
+                  <button onClick={stopCamera} className="bg-white/20 p-3 rounded-full text-white backdrop-blur-md">
+                      <X size={24} />
+                  </button>
+              </div>
+              <div className="flex-1 relative flex items-center justify-center bg-black">
+                  <video 
+                      ref={videoRef} 
+                      autoPlay 
+                      playsInline 
+                      className="w-full h-full object-cover opacity-80"
+                  />
+                  {/* Scan Overlay UI */}
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                      <div className="w-72 h-72 border-2 border-accent-500 rounded-2xl relative">
+                          <div className="absolute top-0 left-0 w-6 h-6 border-t-4 border-l-4 border-accent-500 -mt-1 -ml-1"></div>
+                          <div className="absolute top-0 right-0 w-6 h-6 border-t-4 border-r-4 border-accent-500 -mt-1 -mr-1"></div>
+                          <div className="absolute bottom-0 left-0 w-6 h-6 border-b-4 border-l-4 border-accent-500 -mb-1 -ml-1"></div>
+                          <div className="absolute bottom-0 right-0 w-6 h-6 border-b-4 border-r-4 border-accent-500 -mb-1 -mr-1"></div>
+                          {isScanning && <div className="absolute inset-0 bg-accent-500/20 animate-pulse"></div>}
+                      </div>
+                  </div>
+                  <div className="absolute bottom-20 left-0 right-0 flex justify-center pointer-events-auto">
+                      <button 
+                          onClick={captureAndAnalyze}
+                          disabled={isScanning}
+                          className="bg-white rounded-full p-6 shadow-2xl hover:scale-105 transition active:scale-95 disabled:opacity-50"
+                      >
+                          {isScanning ? <RefreshCw className="animate-spin text-brand-900" size={32}/> : <div className="w-8 h-8 bg-brand-900 rounded-full border-4 border-white"></div>}
+                      </button>
+                  </div>
+                  <div className="absolute bottom-8 left-0 right-0 text-center text-white text-sm font-medium">
+                      {isScanning ? 'Analiz ediliyor...' : 'Etiketi çerçeveye alıp butona basın'}
+                  </div>
+              </div>
+          </div>
+      )}
+
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 print:hidden">
         <div>
           <h1 className="text-2xl font-bold text-brand-900">Depo / Antrepo</h1>
           <p className="text-slate-500">Stok yönetimi ve mal kabul işlemleri.</p>
         </div>
         <button 
-          onClick={() => setShowModal(true)}
+          onClick={() => { setFormData({ name: '', sku: '', quantity: 0, unit: 'Adet', location: '', status: 'Stokta', ownerName: '', entryDate: new Date().toISOString().slice(0, 10) }); setShowModal(true); }}
           className="bg-accent-500 text-brand-900 px-5 py-3 rounded-xl hover:bg-accent-400 transition flex items-center gap-2 shadow-lg shadow-accent-500/20 font-bold"
         >
           <Plus size={20} /> Mal Kabul
@@ -103,12 +353,19 @@ const Warehouse: React.FC = () => {
          <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex items-center justify-between">
             <div>
                <p className="text-xs font-bold text-slate-500 uppercase mb-2">DOLULUK ORANI</p>
-               <p className="text-3xl font-extrabold text-blue-600">%65</p>
+               <p className={clsx("text-3xl font-extrabold", occupancyRate > 90 ? "text-red-600" : "text-blue-600")}>%{occupancyRate}</p>
+               <p className="text-[10px] text-slate-400 mt-1">Kap: {MAX_CAPACITY.toLocaleString()} birim</p>
             </div>
             <div className="w-16 h-16 relative flex items-center justify-center">
-               <svg viewBox="0 0 36 36" className="w-full h-full">
+               <svg viewBox="0 0 36 36" className="w-full h-full transform -rotate-90">
                   <path d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="#e2e8f0" strokeWidth="4" />
-                  <path d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="#3b82f6" strokeWidth="4" strokeDasharray="65, 100" />
+                  <path 
+                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" 
+                    fill="none" 
+                    stroke={occupancyRate > 90 ? "#ef4444" : "#3b82f6"} 
+                    strokeWidth="4" 
+                    strokeDasharray={`${occupancyRate}, 100`} 
+                  />
                </svg>
             </div>
          </div>
@@ -171,8 +428,8 @@ const Warehouse: React.FC = () => {
                   </div>
 
                   <div className="flex justify-end gap-2 mt-4 pt-3 border-t border-slate-50">
-                     <button onClick={() => handleOpenLabel(item)} className="text-sm font-bold text-slate-500 hover:text-brand-600 flex items-center gap-1 px-2 py-1 rounded hover:bg-slate-50 transition">
-                        <Printer size={16} /> Etiket
+                     <button onClick={() => handlePrintVectorLabel(item)} className="text-sm font-bold text-slate-500 hover:text-brand-600 flex items-center gap-1 px-2 py-1 rounded hover:bg-slate-50 transition">
+                        <Printer size={16} /> Etiket (PDF)
                      </button>
                      <button onClick={() => handleDelete(item.id)} className="text-sm font-bold text-slate-500 hover:text-red-600 flex items-center gap-1 px-2 py-1 rounded hover:bg-red-50 transition">
                         <Trash2 size={16} /> Sil
@@ -192,6 +449,18 @@ const Warehouse: React.FC = () => {
               <h3 className="text-white font-bold text-lg">Mal Kabul / Stok Girişi</h3>
               <button onClick={() => setShowModal(false)} className="text-white/60 hover:text-white transition"><X size={20} /></button>
             </div>
+            
+            {/* AI Scan Trigger inside Modal */}
+            <div className="bg-slate-50 p-4 border-b border-slate-100 flex justify-center">
+                <button 
+                    type="button" 
+                    onClick={startCamera}
+                    className="flex items-center gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 text-white px-6 py-3 rounded-xl shadow-lg hover:scale-105 transition transform font-bold"
+                >
+                    <Camera size={20} /> Etiket Tara (AI Kamera)
+                </button>
+            </div>
+
             <form onSubmit={handleCreate} className="p-6 space-y-4">
                {/* Form Fields */}
                <div className="grid grid-cols-2 gap-4">
@@ -223,10 +492,7 @@ const Warehouse: React.FC = () => {
                      <label className="text-xs font-bold text-slate-500 uppercase">Birim</label>
                      <select className="w-full border border-slate-200 rounded-xl p-3 text-sm outline-none bg-slate-50" 
                         value={formData.unit} onChange={e => setFormData({...formData, unit: e.target.value as any})}>
-                        <option value="Adet">Adet</option>
-                        <option value="Koli">Koli</option>
-                        <option value="Palet">Palet</option>
-                        <option value="Kg">Kg</option>
+                        {unitOptions.map(u => <option key={u} value={u}>{u}</option>)}
                      </select>
                   </div>
                </div>
@@ -249,17 +515,13 @@ const Warehouse: React.FC = () => {
                </div>
 
                <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase">Mal Sahibi (Müşteri Seçimi)</label>
-                  <select
-                    className="w-full border border-slate-200 rounded-xl p-3 text-sm outline-none bg-white"
-                    value={formData.ownerName} 
-                    onChange={e => setFormData({...formData, ownerName: e.target.value})}
-                  >
-                      <option value="">Seçiniz...</option>
-                      {customers.map(c => (
-                          <option key={c.id} value={c.name}>{c.name}</option>
-                      ))}
-                  </select>
+                  <label className="text-xs font-bold text-slate-500 uppercase block mb-1">Mal Sahibi (Müşteri Seçimi)</label>
+                  <SearchableSelect
+                      options={customers.map(c => ({ id: c.name, label: c.name }))}
+                      value={formData.ownerName || ''}
+                      onChange={(val) => setFormData({...formData, ownerName: val})}
+                      placeholder="Müşteri Ara..."
+                  />
                </div>
 
                <div className="pt-4">
@@ -268,58 +530,6 @@ const Warehouse: React.FC = () => {
             </form>
           </div>
         </div>
-      )}
-
-      {/* Label Print Modal */}
-      {showLabelModal && selectedItem && (
-         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/80 p-4 backdrop-blur-sm print:bg-white print:p-0 print:absolute print:inset-0 print:z-auto print:block">
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden animate-in zoom-in-95 duration-200 print:shadow-none print:w-full print:max-w-none print:rounded-none">
-               <div className="bg-brand-900 px-4 py-3 flex justify-between items-center print:hidden">
-                  <h3 className="text-white font-bold">Etiket Önizleme</h3>
-                  <div className="flex items-center gap-2">
-                     <button onClick={() => window.print()} className="text-white/80 hover:text-white p-1 hover:bg-white/10 rounded transition"><Printer size={18} /></button>
-                     <button onClick={() => setShowLabelModal(false)} className="text-white/80 hover:text-white p-1 hover:bg-white/10 rounded transition"><X size={18} /></button>
-                  </div>
-               </div>
-               
-               {/* Actual Label Area - Designed to match 10x10cm or similar sticker */}
-               <div className="p-6 flex flex-col items-center justify-center text-center border-4 border-slate-900 m-4 print:m-0 print:border-2 print:w-[10cm] print:h-[10cm] print:flex print:flex-col print:justify-center print:items-center">
-                  <h2 className="text-xl font-extrabold text-slate-900 mb-1">LOGYCY LOGISTICS</h2>
-                  <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-4">WAREHOUSE ENTRY LABEL</p>
-                  
-                  <div className="w-full border-t-2 border-b-2 border-slate-900 py-4 my-2">
-                     <h1 className="text-3xl font-black text-slate-900 leading-tight mb-2 break-words">{selectedItem.name}</h1>
-                     <p className="font-bold text-slate-600">Müşteri: {selectedItem.ownerName || 'Unknown'}</p>
-                  </div>
-
-                  <div className="flex w-full justify-between items-end my-4 px-2">
-                     <div className="text-left">
-                        <p className="text-xs font-bold text-slate-400 uppercase">LOCATION</p>
-                        <p className="text-2xl font-mono font-bold text-slate-900">{selectedItem.location}</p>
-                     </div>
-                     <div className="text-right">
-                        <p className="text-xs font-bold text-slate-400 uppercase">QUANTITY</p>
-                        <p className="text-2xl font-mono font-bold text-slate-900">{selectedItem.quantity} <span className="text-sm">{selectedItem.unit}</span></p>
-                     </div>
-                  </div>
-
-                  {/* Simulated Barcode */}
-                  <div className="mt-auto w-full">
-                     <div className="h-12 bg-slate-900 w-full mb-1 flex items-center justify-center gap-1">
-                        {/* Just a visual pattern to look like barcode */}
-                        {Array.from({length: 40}).map((_,i) => (
-                           <div key={i} className="h-full bg-white" style={{width: Math.random() > 0.5 ? '2px' : '4px', opacity: Math.random() > 0.3 ? 1 : 0}}></div>
-                        ))}
-                     </div>
-                     <p className="font-mono text-xs tracking-[0.3em] font-bold">{selectedItem.sku || 'LOG-'+selectedItem.id.substring(0,6).toUpperCase()}</p>
-                  </div>
-                  
-                  <p className="text-[8px] text-slate-400 mt-2">
-                     Entry: {new Date(selectedItem.entryDate).toLocaleDateString()} | System Generated
-                  </p>
-               </div>
-            </div>
-         </div>
       )}
     </div>
   );

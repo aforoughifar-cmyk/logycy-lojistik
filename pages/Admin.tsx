@@ -37,8 +37,8 @@ const Admin: React.FC = () => {
     // Default values for missing fields in this simplified form
     const dataToSubmit = {
         ...formData,
-        transportMode: 'deniz',
-        loadType: 'FCL',
+        transportMode: 'deniz' as 'deniz' | 'hava' | 'kara',
+        loadType: 'FCL' as 'FCL' | 'LCL',
         description: 'Yeni Gönderi'
     };
     const result = await supabaseService.createShipment(dataToSubmit);

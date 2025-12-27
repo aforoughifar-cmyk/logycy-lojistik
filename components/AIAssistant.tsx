@@ -32,9 +32,7 @@ const AIAssistant: React.FC = () => {
     setIsLoading(true);
 
     try {
-      // Initialize Gemini
-      // NOTE: In a real production app, ensure API_KEY is set in your environment variables.
-      // For this demo, we assume process.env.API_KEY is available as per instructions.
+      // Initialize Gemini with the provided API key
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       
       const systemInstruction = `You are "Logycy Genius", an expert AI assistant for a logistics company based in Northern Cyprus (KKTC). 
@@ -63,9 +61,17 @@ const AIAssistant: React.FC = () => {
       if (text) {
         setMessages(prev => [...prev, { role: 'model', text: text }]);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("AI Error:", error);
-      setMessages(prev => [...prev, { role: 'model', text: 'Üzgünüm, şu anda bağlantı kuramıyorum. Lütfen API anahtarını kontrol edin veya daha sonra tekrar deneyin.' }]);
+      let errorMsg = 'Üzgünüm, bir hata oluştu.';
+      
+      if (error.message?.includes('API key')) {
+         errorMsg = 'API Anahtarı yapılandırılmamış. Lütfen sistem yöneticisi ile görüşün.';
+      } else if (error.message?.includes('fetch')) {
+         errorMsg = 'İnternet bağlantınızı kontrol edin.';
+      }
+
+      setMessages(prev => [...prev, { role: 'model', text: errorMsg }]);
     } finally {
       setIsLoading(false);
     }
@@ -175,7 +181,7 @@ const AIAssistant: React.FC = () => {
             </button>
           </form>
           <div className="mt-2 flex justify-center gap-2">
-             {['E-posta Taslağı', 'Lojistik Terimi', 'Hesaplama'].map(tag => (
+             {['E-posta Taslağı', 'Navlun Hesabı', 'Gümrük Bilgisi'].map(tag => (
                 <button 
                   key={tag} 
                   onClick={() => setInput(tag + ': ')}

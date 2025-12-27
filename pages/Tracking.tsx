@@ -1,5 +1,6 @@
+
 import React, { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
 import { supabaseService } from '../services/supabaseService';
 import { Shipment, ShipmentStatus } from '../types';
 import { Search, MapPin, Calendar, Package, AlertCircle, Check, ArrowRight, Truck, Anchor, CheckCircle2 } from 'lucide-react';
@@ -7,7 +8,8 @@ import LiveMap from '../components/LiveMap';
 import clsx from 'clsx';
 
 const Tracking: React.FC = () => {
-  const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
+  const searchParams = new URLSearchParams(location.search);
   const initialId = searchParams.get('id') || '';
   
   const [trackingNumber, setTrackingNumber] = useState(initialId);
@@ -19,14 +21,15 @@ const Tracking: React.FC = () => {
     if (initialId) {
       handleTrack(initialId);
     }
-  }, []);
+  }, [initialId]);
 
   const handleTrack = async (id: string) => {
     setLoading(true);
     setError(null);
     setShipment(null);
     
-    setSearchParams({ id });
+    // In v5 we don't have easy way to update params without push/replace which might re-trigger. 
+    // We just rely on internal state for result.
 
     const result = await supabaseService.getShipmentByTrackingNumber(id);
     
@@ -62,7 +65,7 @@ const Tracking: React.FC = () => {
      // Simplified logic mapping
      const statusMap: Record<string, number> = {
         [ShipmentStatus.DRAFT]: 0,
-        [ShipmentStatus.BOOKED]: 0,
+        [ShipmentStatus.BOOKED]: 0, 
         [ShipmentStatus.PREPARING]: 1,
         [ShipmentStatus.CUSTOMS]: 1,
         [ShipmentStatus.IN_TRANSIT]: 2,
@@ -133,7 +136,7 @@ const Tracking: React.FC = () => {
                       <span className="bg-slate-100 text-slate-500 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider mb-4 inline-block">
                         {shipment.transportMode} Kargo
                       </span>
-                      <h2 className="text-3xl font-black text-brand-900 mb-1">{shipment.referenceNo}</h2>
+                      <h2 className="text-3xl font-black text-brand-900 mb-1 break-words">{shipment.referenceNo}</h2>
                       <p className="text-slate-500 text-sm mb-6">Müşteri Referansı: {shipment.description || '-'}</p>
                       
                       <div className="space-y-6 relative">
@@ -184,36 +187,36 @@ const Tracking: React.FC = () => {
                 </div>
             </div>
 
-            {/* Visual Progress Stepper */}
-            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8 overflow-x-auto">
-               <div className="min-w-[600px]">
-                  <div className="flex justify-between items-center relative">
-                     {/* Background Line */}
-                     <div className="absolute left-0 top-1/2 w-full h-1 bg-slate-100 -z-0 -translate-y-1/2 rounded-full"></div>
-                     {/* Active Line (Calculated mostly visually here for simplicity) */}
+            {/* Visual Progress Stepper - Mobile Optimized */}
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 md:p-8">
+               <div className="flex flex-col md:flex-row justify-between md:items-center relative gap-6 md:gap-0">
+                  {/* Desktop Background Line */}
+                  <div className="hidden md:block absolute left-0 top-1/2 w-full h-1 bg-slate-100 -z-0 -translate-y-1/2 rounded-full"></div>
+                  
+                  {/* Mobile Background Line */}
+                  <div className="md:hidden absolute left-6 top-0 bottom-0 w-1 bg-slate-100 -z-0 rounded-full"></div>
+
+                  {steps.map((step, idx) => {
+                     const status = getStepStatus(idx, shipment.status);
+                     const StepIcon = step.icon;
                      
-                     {steps.map((step, idx) => {
-                        const status = getStepStatus(idx, shipment.status);
-                        const StepIcon = step.icon;
-                        
-                        return (
-                           <div key={step.key} className="relative z-10 flex flex-col items-center gap-3 group">
-                              <div className={clsx(
-                                 "w-12 h-12 rounded-full flex items-center justify-center border-4 transition-all duration-500",
-                                 status === 'completed' ? "bg-green-500 border-green-100 text-white" :
-                                 status === 'active' ? "bg-brand-900 border-brand-100 text-white scale-110 shadow-lg" :
-                                 "bg-white border-slate-200 text-slate-300"
-                              )}>
-                                 {status === 'completed' ? <Check size={20} strokeWidth={3} /> : <StepIcon size={20} />}
-                              </div>
-                              <div className="text-center">
-                                 <p className={clsx("font-bold text-sm", status === 'pending' ? "text-slate-400" : "text-slate-900")}>{step.label}</p>
-                                 {status === 'active' && <span className="text-[10px] font-bold text-brand-600 bg-brand-50 px-2 py-0.5 rounded mt-1 inline-block animate-pulse">İşleniyor</span>}
-                              </div>
+                     return (
+                        <div key={step.key} className="relative z-10 flex md:flex-col items-center gap-4 md:gap-3 group">
+                           <div className={clsx(
+                              "w-12 h-12 rounded-full flex flex-shrink-0 items-center justify-center border-4 transition-all duration-500",
+                              status === 'completed' ? "bg-green-500 border-green-100 text-white" :
+                              status === 'active' ? "bg-brand-900 border-brand-100 text-white scale-110 shadow-lg" :
+                              "bg-white border-slate-200 text-slate-300"
+                           )}>
+                              {status === 'completed' ? <Check size={20} strokeWidth={3} /> : <StepIcon size={20} />}
                            </div>
-                        );
-                     })}
-                  </div>
+                           <div className="text-left md:text-center">
+                              <p className={clsx("font-bold text-sm", status === 'pending' ? "text-slate-400" : "text-slate-900")}>{step.label}</p>
+                              {status === 'active' && <span className="text-[10px] font-bold text-brand-600 bg-brand-50 px-2 py-0.5 rounded mt-1 inline-block animate-pulse">İşleniyor</span>}
+                           </div>
+                        </div>
+                     );
+                  })}
                </div>
             </div>
 
@@ -225,12 +228,12 @@ const Tracking: React.FC = () => {
                <div className="divide-y divide-slate-100">
                   {shipment.history && shipment.history.length > 0 ? (
                      shipment.history.map((event, idx) => (
-                        <div key={idx} className="p-6 flex gap-6 hover:bg-slate-50 transition">
-                           <div className="min-w-[100px] text-right">
+                        <div key={idx} className="p-6 flex flex-col sm:flex-row gap-2 sm:gap-6 hover:bg-slate-50 transition">
+                           <div className="min-w-[100px] text-left sm:text-right">
                               <p className="font-bold text-slate-900">{new Date(event.date).toLocaleDateString('tr-TR')}</p>
                               <p className="text-xs text-slate-400">{new Date(event.date).toLocaleTimeString('tr-TR', {hour: '2-digit', minute:'2-digit'})}</p>
                            </div>
-                           <div className="relative pl-6 border-l-2 border-slate-200">
+                           <div className="relative pl-4 sm:pl-6 border-l-2 border-slate-200 ml-1 sm:ml-0">
                               <div className="absolute -left-[9px] top-1.5 w-4 h-4 rounded-full bg-white border-4 border-brand-200"></div>
                               <p className="font-bold text-slate-800 mb-1">{event.description}</p>
                               <p className="text-sm text-slate-500 flex items-center gap-1">

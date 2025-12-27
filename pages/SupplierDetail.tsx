@@ -1,3 +1,4 @@
+
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { supabaseService } from '../services/supabaseService';
@@ -30,7 +31,12 @@ const SupplierDetail: React.FC = () => {
   if (loading) return <div className="p-10 text-center">Yükleniyor...</div>;
   if (!supplier) return <div className="p-10 text-center text-red-500">Tedarikçi bulunamadı.</div>;
 
-  const totalExpense = expenses.reduce((acc, curr) => acc + curr.amount, 0);
+  // Multi-currency calculation
+  const totalExpenses: Record<string, number> = {};
+  expenses.forEach(curr => {
+      const c = curr.currency || 'USD';
+      totalExpenses[c] = (totalExpenses[c] || 0) + curr.amount;
+  });
 
   const getTypeIcon = (type: string) => {
       switch(type) {
@@ -69,9 +75,16 @@ const SupplierDetail: React.FC = () => {
           </div>
 
           <div className="bg-slate-800 text-white rounded-xl shadow-sm p-6">
-             <p className="text-slate-300 text-sm font-medium mb-1">Toplam Ödeme/Gider</p>
-             <p className="text-3xl font-extrabold text-white">${totalExpense.toLocaleString()}</p>
-             <p className="text-xs text-slate-400 mt-2">Bu tedarikçiye ait sistemdeki toplam gider kaydı.</p>
+             <p className="text-slate-300 text-sm font-medium mb-3 border-b border-slate-700 pb-2">Toplam Ödeme/Gider</p>
+             <div className="space-y-2">
+                 {Object.keys(totalExpenses).length === 0 && <span className="text-slate-500 text-sm">Kayıt yok</span>}
+                 {Object.entries(totalExpenses).map(([curr, amount]) => (
+                     <div key={curr} className="flex justify-between items-center">
+                         <span className="text-slate-400 font-bold text-sm">{curr}</span>
+                         <span className="text-xl font-mono font-bold">{amount.toLocaleString()}</span>
+                     </div>
+                 ))}
+             </div>
           </div>
         </div>
 

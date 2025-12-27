@@ -1,24 +1,18 @@
+
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabaseService } from '../services/supabaseService';
-import { Check, Invoice, InvoiceType } from '../types';
-import { ArrowLeft, Calendar, Printer, Banknote, User, AlertCircle, CheckCircle, Clock, Link as LinkIcon, Plus, X } from 'lucide-react';
+import { Check } from '../types';
+import { ArrowLeft, Printer, Banknote, User, AlertCircle, CheckCircle, Clock, X } from 'lucide-react';
 import clsx from 'clsx';
 
 const CheckDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [check, setCheck] = useState<Check | null>(null);
-  const [linkedPayments, setLinkedPayments] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showLinkModal, setShowLinkModal] = useState(false);
   const [showReceiptModal, setShowReceiptModal] = useState(false);
   
-  // Link Invoice State
-  const [availableInvoices, setAvailableInvoices] = useState<Invoice[]>([]);
-  const [selectedInvoiceId, setSelectedInvoiceId] = useState('');
-  const [linkAmount, setLinkAmount] = useState(0);
-
   // Print Settings
   const [settings, setSettings] = useState<any>({});
 
@@ -33,20 +27,8 @@ const CheckDetail: React.FC = () => {
     const result = await supabaseService.getCheckById(checkId);
     if (result.data) {
       setCheck(result.data);
-      setLinkAmount(result.data.amount); // Default to full amount
-      
-      // Load linked invoices
-      const links = await supabaseService.getPaymentsByCheckReference(result.data.referenceNo);
-      if(links.data) setLinkedPayments(links.data);
     }
     setLoading(false);
-  };
-
-  const loadAvailableInvoices = async () => {
-    if(!check) return;
-    const type = check.type === 'in' ? InvoiceType.SALE : InvoiceType.PURCHASE;
-    const result = await supabaseService.getInvoicesByType(type);
-    if(result.data) setAvailableInvoices(result.data);
   };
 
   const handleStatusUpdate = async (newStatus: string) => {
@@ -55,27 +37,8 @@ const CheckDetail: React.FC = () => {
     loadCheck(check.id);
   };
 
-  const handleLinkInvoice = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if(!check || !selectedInvoiceId) return;
-
-    await supabaseService.addInvoicePayment({
-        invoiceId: selectedInvoiceId,
-        amount: linkAmount,
-        date: new Date().toISOString().slice(0, 10),
-        method: 'Çek',
-        reference: `${check.referenceNo} - ${check.bankName || 'Bank'}`
-    });
-
-    setShowLinkModal(false);
-    loadCheck(check.id);
-  };
-
   if (loading) return <div className="p-10 text-center">Yükleniyor...</div>;
   if (!check) return <div className="p-10 text-center text-red-500">Çek bulunamadı.</div>;
-
-  const usedAmount = linkedPayments.reduce((sum, p) => sum + p.amount, 0);
-  const remainingAmount = check.amount - usedAmount;
 
   const getStatusBadge = (status: string) => {
     switch(status) {
@@ -152,109 +115,6 @@ const CheckDetail: React.FC = () => {
             </div>
          </div>
       </div>
-
-      {/* Linked Invoices */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
-         <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-            <div>
-               <h3 className="font-bold text-slate-800 flex items-center gap-2">
-                  <LinkIcon size={18} /> İlişkili Faturalar (Mahsup)
-               </h3>
-               <p className="text-xs text-slate-500 mt-1">Bu çekin kullanıldığı fatura ödemeleri.</p>
-            </div>
-            <div className="text-right">
-               <p className="text-xs text-slate-500">Kalan Bakiye</p>
-               <p className={clsx("font-bold", remainingAmount < 0 ? "text-red-600" : "text-green-600")}>
-                  {remainingAmount.toLocaleString()} {check.currency}
-               </p>
-            </div>
-         </div>
-
-         <div className="p-6">
-            {linkedPayments.length > 0 ? (
-               <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                     <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200">
-                        <tr>
-                           <th className="p-3">Fatura No</th>
-                           <th className="p-3">Cari</th>
-                           <th className="p-3">Tarih</th>
-                           <th className="p-3 text-right">Kullanılan Tutar</th>
-                        </tr>
-                     </thead>
-                     <tbody className="divide-y divide-slate-100">
-                        {linkedPayments.map(lp => (
-                           <tr key={lp.id} className="hover:bg-slate-50">
-                              <td className="p-3 font-mono font-bold text-brand-700">
-                                 {lp.invoices?.invoice_no || '-'}
-                              </td>
-                              <td className="p-3">{lp.invoices?.party_name}</td>
-                              <td className="p-3 text-slate-500">{new Date(lp.date).toLocaleDateString('tr-TR')}</td>
-                              <td className="p-3 text-right font-bold">{lp.amount.toLocaleString()}</td>
-                           </tr>
-                        ))}
-                     </tbody>
-                  </table>
-               </div>
-            ) : (
-               <div className="text-center py-8 text-slate-400 border-2 border-dashed border-slate-100 rounded-xl">
-                  Bu çek henüz bir faturaya bağlanmamış.
-               </div>
-            )}
-
-            <div className="mt-6 pt-6 border-t border-slate-100">
-               <button 
-                 onClick={() => { loadAvailableInvoices(); setShowLinkModal(true); }}
-                 className="flex items-center gap-2 text-brand-600 font-bold hover:bg-brand-50 px-4 py-2 rounded-lg transition"
-               >
-                  <Plus size={18} /> Fatura ile İlişkilendir
-               </button>
-            </div>
-         </div>
-      </div>
-
-      {/* Link Modal */}
-      {showLinkModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-brand-900/60 p-4 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
-            <div className="bg-brand-900 px-6 py-4 flex justify-between items-center">
-              <h3 className="text-white font-bold text-lg">Fatura Seçimi</h3>
-              <button onClick={() => setShowLinkModal(false)} className="text-white/60 hover:text-white transition"><X size={20} /></button>
-            </div>
-            <form onSubmit={handleLinkInvoice} className="p-6 space-y-4">
-               <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase block mb-2">Fatura Seçiniz</label>
-                  <select 
-                    required
-                    className="w-full border border-slate-200 rounded-xl p-3 text-sm outline-none bg-slate-50"
-                    value={selectedInvoiceId}
-                    onChange={e => setSelectedInvoiceId(e.target.value)}
-                  >
-                     <option value="">Seçiniz...</option>
-                     {availableInvoices.map(inv => (
-                        <option key={inv.id} value={inv.id}>
-                           {inv.invoiceNo} - {inv.partyName} ({inv.totalAmount} {inv.currency})
-                        </option>
-                     ))}
-                  </select>
-               </div>
-               <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase block mb-2">Kullanılacak Tutar</label>
-                  <input 
-                    type="number" 
-                    className="w-full border border-slate-200 rounded-xl p-3 text-sm outline-none"
-                    value={linkAmount}
-                    onChange={e => setLinkAmount(Number(e.target.value))}
-                  />
-                  <p className="text-xs text-slate-400 mt-1">Maksimum kullanılabilir: {remainingAmount}</p>
-               </div>
-               <button type="submit" className="w-full bg-brand-600 text-white py-3 rounded-xl font-bold hover:bg-brand-700 transition mt-2">
-                  Kaydet ve İlişkilendir
-               </button>
-            </form>
-          </div>
-        </div>
-      )}
 
       {/* Receipt Modal (Makbuz) */}
       {showReceiptModal && (
